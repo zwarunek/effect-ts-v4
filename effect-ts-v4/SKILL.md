@@ -92,6 +92,15 @@ When generating Effect 4.0 code, always follow these rules:
 18. **Logger.replace is removed** -- use `Logger.layer([myLogger])` to provide a custom logger
 19. **Effect.zipRight → Effect.andThen**, **Effect.firstSuccessOf → Effect.raceAll**, **Schedule.upTo → Schedule.compose(Schedule.recurs(n))**
 20. **Brand.make → callable**: `Schema.brand("X")` produces a schema; `Brand.nominal<T>()` produces a callable constructor (`UserId("123")` not `UserId.make("123")`)
+21. **Config is NOT an Effect subtype** -- `Config` is `Yieldable` (works with `yield*`) but CANNOT be passed to `Effect.orDie`, `Effect.map`, etc. Wrap in `Effect.gen` first.
+22. **`class extends Schema.Struct({...})` breaks** -- this pattern (distinct from `Schema.Class`) is invalid in v4. Convert to `const MySchema = Schema.Struct({...})` with a separate `type MySchema = Schema.Type<typeof MySchema>`.
+23. **`Effect.tryPromise(async () => v)` bare overload removed** -- must use `Effect.tryPromise({ try: ..., catch: ... })` object form.
+24. **`Effect.tap` callback must return Effect** -- `Effect.tap(voidFn)` breaks; wrap as `Effect.tap((x) => Effect.sync(() => voidFn(x)))`.
+25. **`Schema.Object` is removed** -- use `Schema.Unknown` instead.
+26. **`Schema.transform` → `Schema.decodeTo`** -- decode/encode must be wrapped in `SchemaGetter.transform(fn)`.
+27. **`Effect.orDieWith(f)` is removed** -- use `Effect.mapError(f)` then `Effect.orDie` chained.
+28. **Namespace flattening**: `Effect.Effect.Error<T>` → `Effect.Error<T>`, `Effect.Effect.Success<T>` → `Effect.Success<T>`, `Layer.Layer.Success<T>` removed, `ManagedRuntime.ManagedRuntime.Context<T>` removed.
+29. **`Span.parent` is no longer yieldable** -- it's a plain property that may be `undefined`. Guard with `if (span.parent)` before access.
 
 ## Migration Workflow
 

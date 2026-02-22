@@ -633,15 +633,20 @@ const codec = FromSchema.pipe(
 | `Effect.firstSuccessOf(effects)` | `Effect.raceAll(effects)` | Renamed |
 | `Effect.orDieWith(f)` | `Effect.mapError(f), Effect.orDie` | Chain them |
 | `Effect.try(() => value)` | `Effect.try({ try: () => value, catch: (e) => error })` | Bare-function overload removed |
+| `Effect.tryPromise(async () => v)` | `Effect.tryPromise({ try: async () => v, catch: (e) => e })` | Bare-function overload removed |
+| `Effect.tap(voidFn)` | `Effect.tap((x) => Effect.sync(() => voidFn(x)))` | `tap` callback must return `Effect`, not `void` |
 | `LogLevel.Info` / `.label` | `"Info"` (string literal) | `LogLevel` is now a string union type |
 | `Logger.replace(old, new)` | `Logger.layer([myLogger])` | Provide as a layer |
 | `Logger.Logger<I, O>` | `Logger<I, O>` | Same, but `Logger.layer` takes an array |
-| `Brand.make(value)` / `UserId.make(v)` | `Brand.nominal<T>()` + `UserId(v)` | Brands are callable |
-| `Layer.Layer.Success<T>` | Use `Layer.Layer<R, E, Deps>` type directly | `Layer.Layer` namespace removed |
+| `Brand.make(value)` / `UserId.make(v)` | `Schema.decodeSync(BrandSchema)(v)` | For schema brands; `Brand.nominal<T>()` for standalone |
+| `Layer.Layer.Success<T>` | Removed entirely | `Layer.Layer` nested namespace gone |
 | `Effect.Effect.Error<T>` | `Effect.Error<T>` | Namespace flattened |
+| `Effect.Effect.Success<T>` | `Effect.Success<T>` | Namespace flattened |
+| `ManagedRuntime.ManagedRuntime.Context<T>` | Removed | Nested namespace gone; use `any` or infer |
+| `Schema.Object` | `Schema.Unknown` | `Schema.Object` removed entirely |
 | `@effect/platform` imports | `effect/unstable/http` imports | `HttpClient`, `HttpBody`, `HttpClientRequest`, `HttpClientResponse`, `FetchHttpClient` moved |
 | `Schedule.upTo(n)` | `Schedule.compose(Schedule.recurs(n))` | `upTo` removed |
-| `Span.parent` (yieldable) | `span.parent` (plain property, may be undefined) | No longer yieldable |
+| `Span.parent` (yieldable) | `span.parent` (plain property, may be undefined) | No longer yieldable; must null-check |
 
 ---
 
@@ -656,6 +661,91 @@ const codec = FromSchema.pipe(
 | `@effect/vitest` | `@effect/vitest@4.0.0-beta.x` |
 | `@effect/schema` | Removed — use `effect` (Schema in core) |
 | `@effect/language-service` | No v4 beta yet |
+
+---
+
+## Common Pitfalls (Learned from Real Migrations)
+
+These are issues NOT obvious from the API rename tables. They will bite you during typecheck:
+
+### 1. Config is NOT an Effect subtype
+
+`Config` implements `Yieldable` (so `yield*` works in generators) but is NOT assignable to `Effect`. This means `Effect.orDie(Config.string("X"))` **fails** in v4.
+
+**v3:**
+```ts
+const envValue = Effect.orDie(Config.string("SERVICE_IDENTIFIER"))
+```
+
+**v4:**
+```ts
+// Config must be yielded inside a generator
+const envValue = Effect.gen(function*() {
+  return yield* Config.string("SERVICE_IDENTIFIER")
+}).pipe(Effect.orDie)
+```
+
+### 2. `class extends Schema.Struct({...})` breaks
+
+The pattern `class Foo extends S.Struct({...}) {}` (NOT `Schema.Class`) was valid in v3 for creating lightweight schema-backed classes. In v4, this pattern produces an object that is NOT a valid Schema and cannot be passed to `Schema.decodeUnknownEffect`.
+
+**Fix:** Convert to plain schema values with separate type aliases:
+```ts
+// v3
+export class MySchema extends S.Struct({ name: S.String }) {}
+
+// v4
+export const MySchema = S.Struct({ name: S.String })
+export type MySchema = S.Schema.Type<typeof MySchema>
+```
+
+### 3. Effect.catch error type is `unknown`
+
+When migrating `Effect.catchAll` → `Effect.catch`, the error parameter in the handler may be typed as `unknown` (not the inferred error union). If you access `._tag` on the error, you need a type assertion:
+
+```ts
+// May need explicit type annotation
+Effect.catch((e: any) => {
+  console.log(e._tag) // e is unknown without the annotation
+  return Effect.succeed(fallback)
+})
+```
+
+### 4. Schema.Literals takes an array directly
+
+When you have an array variable, pass it directly — don't wrap in another array:
+```ts
+const items = ["a", "b", "c"] as const
+Schema.Literals(items)      // ✅ correct
+Schema.Literals([items])    // ❌ wrong — double-wrapped
+```
+
+### 5. Schema.transform → Schema.decodeTo requires SchemaGetter wrappers
+
+The decode/encode functions must be wrapped in `SchemaGetter.transform()`. Plain functions won't work:
+```ts
+// v4
+import { SchemaGetter } from "effect"
+FromSchema.pipe(Schema.decodeTo(ToSchema, {
+  decode: SchemaGetter.transform((from: FromType): ToType => ...),
+  encode: SchemaGetter.transform((to: ToType): FromType => ...),
+}))
+```
+
+### 6. Logger.make callback must return void
+
+In v3, the logger callback could return `Effect.runPromise(...)`. In v4 it must return `void`. Wrap in a fire-and-forget:
+```ts
+export const logger = Logger.make(
+  ({ logLevel, message }) => {
+    Effect.runPromise(logEffect) // fire-and-forget, no return
+  }
+)
+```
+
+### 7. Schema.decode is gone — use Schema.decodeUnknownEffect
+
+`Schema.decode(MySchema)(input)` no longer exists. Use `Schema.decodeUnknownEffect(MySchema)(input)` for the Effect-returning variant.
 
 ---
 
@@ -690,10 +780,20 @@ const codec = FromSchema.pipe(
 20. `Effect.forkDaemon` → `Effect.forkDetach`
 21. `NoSuchElementException` → `NoSuchElementError`
 22. `Schema.decodeUnknown(S)(input)` → `Schema.decodeUnknownEffect(S)(input)`
-23. `Schema.Class.make(...)` → `Schema.Class.makeUnsafe(...)`
-24. `Schema.Union(A, B, C)` → `Schema.Union([A, B, C])`
-25. `Schema.Literal("a", "b")` → `Schema.Literals(["a", "b"])`
-26. `Schema.Record({ key: K, value: V })` → `Schema.Record(K, V)`
+23. `Schema.encodeUnknown(S)(input)` → `Schema.encodeUnknownEffect(S)(input)`
+24. `Schema.Class.make(...)` → `Schema.Class.makeUnsafe(...)`
+25. `Schema.Union(A, B, C)` → `Schema.Union([A, B, C])`
+26. `Schema.Literal("a", "b")` → `Schema.Literals(["a", "b"])`
+27. `Schema.Record({ key: K, value: V })` → `Schema.Record(K, V)`
+28. `Schema.Object` → `Schema.Unknown`
+29. `Schema.transform(From, To, opts)` → `From.pipe(Schema.decodeTo(To, { decode: SchemaGetter.transform(...), encode: SchemaGetter.transform(...) }))`
+30. `Effect.tryPromise(async () => v)` → `Effect.tryPromise({ try: async () => v, catch: (e) => e })`
+31. `Effect.try(() => v)` → `Effect.try({ try: () => v, catch: (e) => e })`
+32. `Effect.orDieWith(f)` → `Effect.mapError(f)` then `Effect.orDie`
+33. `ParseError` (from `effect/ParseResult`) → `SchemaError` (from `effect/Schema`)
+34. `class Foo extends S.Struct({...}) {}` → `const Foo = S.Struct({...}); type Foo = S.Schema.Type<typeof Foo>`
+35. `Effect.Effect.Success<T>` → `Effect.Success<T>`
+36. `Effect.Effect.Error<T>` → `Effect.Error<T>`
 
 ### Phase 5: Logger and runtime
 27. Replace `Logger.replace(Logger.defaultLogger, myLogger)` with `Logger.layer([myLogger])`
