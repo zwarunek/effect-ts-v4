@@ -82,3 +82,24 @@ When generating Effect 4.0 code, always follow these rules:
 8. **Layer naming convention**: use `.layer` not `.Default` or `.Live`
 9. **Generator `this`**: use `Effect.gen({ self: this }, function*() { ... })` not `Effect.gen(this, function*() { ... })`
 10. **Cause is flat**: `cause.reasons` array, not a recursive tree
+11. **Tagged errors with fields**: use `Schema.TaggedErrorClass<Self>()("Tag", { field: Schema.String })`, NOT `Data.TaggedError("Tag")<{ field: string }>` (the `<{}>` generic syntax breaks in v4 types). Errors without fields can still use `Data.TaggedError("Tag")`.
+12. **Schema.Union takes an array**: `Schema.Union([A, B])` not `Schema.Union(A, B)`
+13. **Schema.Literal is single-value**: use `Schema.Literals(["a", "b"])` for multiple literals, not `Schema.Literal("a", "b")`
+14. **Schema.decodeUnknown → Schema.decodeUnknownEffect** (the Effect-returning variant was renamed; `decodeUnknownSync` is unchanged)
+15. **Schema.Class.make → Schema.Class.makeUnsafe**
+16. **`@effect/platform` is removed** -- import `HttpClient`, `HttpBody`, `HttpClientRequest`, `FetchHttpClient` from `effect/unstable/http`
+17. **LogLevel is a string union** (`"Info"`, `"Error"`, etc.), not an object with `.label`
+18. **Logger.replace is removed** -- use `Logger.layer([myLogger])` to provide a custom logger
+19. **Effect.zipRight → Effect.andThen**, **Effect.firstSuccessOf → Effect.raceAll**, **Schedule.upTo → Schedule.compose(Schedule.recurs(n))**
+20. **Brand.make → callable**: `Schema.brand("X")` produces a schema; `Brand.nominal<T>()` produces a callable constructor (`UserId("123")` not `UserId.make("123")`)
+
+## Migration Workflow
+
+When migrating a codebase from v3 to v4, **always read `docs/09-migration.md` first**. It contains a phased checklist. The recommended order is:
+
+1. **Packages first** (update versions, remove `@effect/platform` and `@effect/schema`)
+2. **Services second** (these are the foundation; everything else depends on them)
+3. **Error classes third** (`Data.TaggedError` → `Schema.TaggedErrorClass`)
+4. **API renames fourth** (bulk find-and-replace for `catchAll`, `decodeUnknown`, `Union`, etc.)
+5. **Logger/runtime last** (these are leaf concerns)
+6. **Verify**: typecheck → tests → bundle size

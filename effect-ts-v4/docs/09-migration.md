@@ -485,17 +485,222 @@ The `Result.Failure` variant exposes the error via `.failure` (not `.left`). The
 
 ---
 
+## Tagged Errors: Data.TaggedError Constructor Change
+
+In v3, `Data.TaggedError` accepted a type parameter on the class extension to define fields. In v4, the constructor is generic at the call site instead, which breaks the `extends Data.TaggedError("Tag")<{ fields }>` pattern at the TypeScript type level.
+
+### Migration
+
+**v3:**
+
+```ts
+import { Data } from "effect"
+
+class NotFoundError extends Data.TaggedError("NotFoundError")<{
+  readonly id: string
+}> {}
+
+new NotFoundError({ id: "123" }) // works
+```
+
+**v4 — use `Schema.TaggedErrorClass`:**
+
+```ts
+import { Schema } from "effect"
+
+class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()(
+  "NotFoundError",
+  { id: Schema.String },
+) {}
+
+new NotFoundError({ id: "123" }) // works, with runtime validation
+```
+
+For errors **without fields**, `Data.TaggedError` still works fine:
+
+```ts
+class EmptyError extends Data.TaggedError("EmptyError") {}
+new EmptyError() // works
+```
+
+For errors with complex object fields (not just primitives), use `Schema.Any`:
+
+```ts
+class ComplexError extends Schema.TaggedErrorClass<ComplexError>()(
+  "ComplexError",
+  { payload: Schema.Any },
+) {}
+```
+
+---
+
+## Schema API Changes
+
+### Schema.Union takes an array
+
+**v3:**
+
+```ts
+Schema.Union(Schema.String, Schema.Number)
+Schema.Union(Schema.Literal("a"), Schema.Literal("b"))
+```
+
+**v4:**
+
+```ts
+Schema.Union([Schema.String, Schema.Number])
+Schema.Union([Schema.Literal("a"), Schema.Literal("b")])
+```
+
+### Schema.Literal takes a single value; use Schema.Literals for multiple
+
+**v3:**
+
+```ts
+Schema.Literal("a", "b", "c")
+```
+
+**v4:**
+
+```ts
+Schema.Literal("a")               // single literal
+Schema.Literals(["a", "b", "c"])   // union of literals
+```
+
+### Schema.decodeUnknown → Schema.decodeUnknownEffect
+
+The function that returns an `Effect` was renamed. `decodeUnknownSync` is unchanged.
+
+| v3 | v4 | Returns |
+|---|---|---|
+| `Schema.decodeUnknown(S)(input)` | `Schema.decodeUnknownEffect(S)(input)` | `Effect<T, SchemaError>` |
+| `Schema.encodeUnknown(S)(input)` | `Schema.encodeUnknownEffect(S)(input)` | `Effect<E, SchemaError>` |
+| `Schema.decodeUnknownSync(S)(input)` | `Schema.decodeUnknownSync(S)(input)` | `T` (throws) |
+| `Schema.encodeSync(S)(input)` | `Schema.encodeSync(S)(input)` | `E` (throws) |
+| `ParseError` | `SchemaError` | Error type |
+
+### Schema.Class.make → Schema.Class.makeUnsafe
+
+```ts
+// v3
+const user = User.make({ name: "Alice" })
+
+// v4
+const user = User.makeUnsafe({ name: "Alice" })
+```
+
+### Schema.Record takes positional args
+
+```ts
+// v3
+Schema.Record({ key: Schema.String, value: Schema.Number })
+
+// v4
+Schema.Record(Schema.String, Schema.Number)
+```
+
+### Schema.transform → Schema.decodeTo
+
+```ts
+// v3
+const codec = Schema.transform(FromSchema, ToSchema, {
+  decode: (from) => toValue,
+  encode: (to) => fromValue,
+})
+
+// v4
+import { SchemaGetter } from "effect"
+
+const codec = FromSchema.pipe(
+  Schema.decodeTo(ToSchema, {
+    decode: SchemaGetter.transform((from) => toValue),
+    encode: SchemaGetter.transform((to) => fromValue),
+  })
+)
+```
+
+### Schema.optional / Schema.Set
+
+`Schema.optional` works the same. `Schema.Set` has been removed; use `Schema.Array` with uniqueness checks or `Schema.Unknown` for unvalidated sets.
+
+---
+
+## Other Renamed / Removed APIs
+
+| v3 | v4 | Notes |
+|---|---|---|
+| `Effect.zipRight(a, b)` | `a.pipe(Effect.andThen(b))` | `zipRight` removed |
+| `Effect.firstSuccessOf(effects)` | `Effect.raceAll(effects)` | Renamed |
+| `Effect.orDieWith(f)` | `Effect.mapError(f), Effect.orDie` | Chain them |
+| `Effect.try(() => value)` | `Effect.try({ try: () => value, catch: (e) => error })` | Bare-function overload removed |
+| `LogLevel.Info` / `.label` | `"Info"` (string literal) | `LogLevel` is now a string union type |
+| `Logger.replace(old, new)` | `Logger.layer([myLogger])` | Provide as a layer |
+| `Logger.Logger<I, O>` | `Logger<I, O>` | Same, but `Logger.layer` takes an array |
+| `Brand.make(value)` / `UserId.make(v)` | `Brand.nominal<T>()` + `UserId(v)` | Brands are callable |
+| `Layer.Layer.Success<T>` | Use `Layer.Layer<R, E, Deps>` type directly | `Layer.Layer` namespace removed |
+| `Effect.Effect.Error<T>` | `Effect.Error<T>` | Namespace flattened |
+| `@effect/platform` imports | `effect/unstable/http` imports | `HttpClient`, `HttpBody`, `HttpClientRequest`, `HttpClientResponse`, `FetchHttpClient` moved |
+| `Schedule.upTo(n)` | `Schedule.compose(Schedule.recurs(n))` | `upTo` removed |
+| `Span.parent` (yieldable) | `span.parent` (plain property, may be undefined) | No longer yieldable |
+
+---
+
+## Package Changes
+
+| v3 | v4 |
+|---|---|
+| `effect@^3.x` | `effect@4.0.0-beta.x` |
+| `@effect/platform` | Removed — use `effect/unstable/http` |
+| `@effect/platform-node` | `@effect/platform-node@4.0.0-beta.x` |
+| `@effect/opentelemetry` | `@effect/opentelemetry@4.0.0-beta.x` |
+| `@effect/vitest` | `@effect/vitest@4.0.0-beta.x` |
+| `@effect/schema` | Removed — use `effect` (Schema in core) |
+| `@effect/language-service` | No v4 beta yet |
+
+---
+
 ## Quick Migration Checklist
 
-1. Replace all `Context.Tag` / `Context.GenericTag` / `Effect.Tag` / `Effect.Service` with `ServiceMap.Service`
-2. Replace `yield* ref` with `yield* Ref.get(ref)`; `yield* deferred` with `yield* Deferred.await(deferred)`; `yield* fiber` with `yield* Fiber.join(fiber)`
-3. Rename `Effect.fork` to `Effect.forkChild`, `Effect.forkDaemon` to `Effect.forkDetach`
-4. Rename `Effect.catchAll` to `Effect.catch`, `Effect.catchAllCause` to `Effect.catchCause`, `Effect.catchSome` to `Effect.catchIf`, `Effect.catchSomeCause` to `Effect.catchCauseIf`, etc.
-5. Replace `FiberRef` usage with `ServiceMap.Reference` / `References.*`
-6. Replace `Scope.extend` with `Scope.provide`
-7. Replace `Either` with `Result`: `Left`/`Right` variants become `Failure`/`Success`; `Either.left(e)` → `Result.fail(e)`; `Either.right(a)` → `Result.succeed(a)`; `Either.isLeft` → `Result.isFailure`; `Either.isRight` → `Result.isSuccess`
-8. Update `Cause` pattern matching to iterate `cause.reasons` instead of recursive tree matching
-9. Rename all `*Exception` to `*Error` (e.g., `NoSuchElementException` to `NoSuchElementError`)
-10. Update `Effect.gen(this, function*() { ... })` to `Effect.gen({ self: this }, function*() { ... })`
-11. Replace `Effect.provide(layer, { local: true })` where test isolation is needed
-12. Remove `@effect/schema` dependency -- Schema is now in `effect`
+### Phase 1: Package updates
+1. Update `effect` to `4.0.0-beta.x`
+2. Remove `@effect/platform` — replace imports with `effect/unstable/http`
+3. Remove `@effect/schema` — Schema is now in `effect`
+4. Update `@effect/platform-node`, `@effect/opentelemetry`, `@effect/vitest` to `4.0.0-beta.x`
+5. Run `pnpm install`
+
+### Phase 2: Service definitions (do these first — everything depends on them)
+6. Replace all `Context.Tag` / `Effect.Tag` / `Effect.Service` with `ServiceMap.Service`
+7. Replace `effect: make` with `make: make` in service options
+8. Remove `accessors: true` and `dependencies: [...]` from all services
+9. Add explicit `static layer = Layer.effect(this, this.make).pipe(Layer.provide(...))` to each service
+10. Rename all `.Default` references to `.layer`
+11. Replace all accessor calls (`ServiceName.fieldName`) with `yield*` pattern: `const svc = yield* ServiceName; svc.fieldName`
+
+### Phase 3: Error classes
+12. Replace `Data.TaggedError("Tag")<{ fields }>` with `Schema.TaggedErrorClass<Self>()("Tag", { schemaFields })`
+13. Errors without fields: keep `Data.TaggedError("Tag")` as-is
+
+### Phase 4: API renames (use find-and-replace)
+14. `Effect.catchAll` → `Effect.catch`
+15. `Effect.catchAllCause` → `Effect.catchCause`
+16. `Effect.catchSome` → `Effect.catchIf`
+17. `Effect.zipRight` → `Effect.andThen`
+18. `Effect.firstSuccessOf` → `Effect.raceAll`
+19. `Effect.fork` → `Effect.forkChild`
+20. `Effect.forkDaemon` → `Effect.forkDetach`
+21. `NoSuchElementException` → `NoSuchElementError`
+22. `Schema.decodeUnknown(S)(input)` → `Schema.decodeUnknownEffect(S)(input)`
+23. `Schema.Class.make(...)` → `Schema.Class.makeUnsafe(...)`
+24. `Schema.Union(A, B, C)` → `Schema.Union([A, B, C])`
+25. `Schema.Literal("a", "b")` → `Schema.Literals(["a", "b"])`
+26. `Schema.Record({ key: K, value: V })` → `Schema.Record(K, V)`
+
+### Phase 5: Logger and runtime
+27. Replace `Logger.replace(Logger.defaultLogger, myLogger)` with `Logger.layer([myLogger])`
+28. `LogLevel` is now a string (`"Info"`, `"Error"`, etc.), not an object with `.label`
+29. `Logger.make` callback must return `void` (not `Effect`) — use fire-and-forget for async logging
+
+### Phase 6: Verify
+30. Run typecheck (`tsc --noEmit`)
+31. Run tests
+32. Check bundle size — v4 typically reduces bundle due to `@effect/platform` consolidation
